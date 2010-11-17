@@ -1,9 +1,7 @@
 {- -}
 module Utils.Browser (CookieLoader) where
 
-import Control.Monad.Trans
-import Network.HTTP.Cookie
+import Network.URI
 
-type CookieLoader m = String -> m [Cookie]
-
+type CookieLoader m = String -> m [(String, String)]
 
