@@ -1,52 +1,57 @@
 {-# LANGUAGE ViewPatterns, PackageImports, RecordWildCards #-}
 module Network.Service.NicoVideo 
-       (ThumbInfo (..), Tag (..), getThumbInfo,
+       (ThumbInfo (..), Tag (..), getThumbInfo , 
+        PlayerStatus (..), MessageServer (..), LiveScreen (..), LiveContents (..), 
+        Que (..), UserTwitterInfo (..), LiveUser (..), LiveTelop (..), LiveStream (..), RTMP(..),
+        LiveTwitter (..),
+        getPlayerStatus,
         communityLargeThumbnailURL, communitySmallThumbnailURL
        ) where
 
-import Control.Monad (when)
+import Control.Monad.Trans
 import Control.Monad.Identity
 import Control.Failure
-import Data.List (dropWhile)
-import Data.Maybe (fromJust, isJust, listToMaybe)
 import System.Time
---import Control.Exception
---import Control.Monad (when)
 import qualified Data.ByteString.Char8 as C8
 import qualified Data.ByteString.Lazy.UTF8 as U8
-import "utf8-string" Data.String.UTF8
 import qualified Text.HTML.TagSoup as TS
 import Text.Parsec
 import Text.StringLike
 import qualified Network.HTTP.Enumerator as NH
 import Network.URL
-
+import qualified Network.Socket as N (PortNumber (..))
 
 import Utils.Browser
 import Utils.Browser.GoogleChrome
 
 
 --
+-- HTTPリクエスト用ヘルパ
 --
---
-sendRq :: String -> CookieLoader IO ->  IO [TS.Tag String]
+sendRq :: (MonadIO m) => String -> CookieLoader m ->  m (U8.ByteString)
 sendRq url loader = do
-  rq <- NH.parseUrl url 
+  rq <- liftIO $ NH.parseUrl url
   cookies <- loader $ C8.unpack $ NH.host rq
   let cookie_hdr = concatMap (\(x,y) -> encString False ok_url x ++ "=" ++ encString False ok_url y ++ ";") cookies
-  (NH.Response cd _ bdy) <- NH.httpLbsRedirect
+  (NH.Response cd _ bdy) <- liftIO $ NH.httpLbsRedirect
                             (rq { NH.requestHeaders = [ (C8.pack "Cookie", C8.pack cookie_hdr) ]})
-  when (cd < 200 || cd >= 300) $ failure $ NH.StatusCodeException cd bdy
-  return $ TS.parseTags $ tail $ dropWhile (/= '\n') $ U8.toString bdy
+  when (cd < 200 || cd >= 300) $ liftIO $ failure $ NH.StatusCodeException cd bdy
+  return bdy
+
+sendRqXML :: (MonadIO m) => String -> CookieLoader m ->  TagParserT String u Identity a -> u -> m (Either RequestError a)
+sendRqXML url loader parser st = do
+  doc <- sendRq url loader >>= return . U8.toString
+  let res = runIdentity $ parseTag parser st url $ TS.parseTags $ tail $ dropWhile (/= '\n') doc
+  case res of
+    Left err -> liftIO (print doc >> print err)
+    _ -> return ()
+  return res;
 
 
-
-getTextByTagName :: String -> [TS.Tag String] -> String
-getTextByTagName tagname tags = TS.fromTagText $ dropWhile (not . TS.isTagOpenName tagname) tags !! 1
 
 
 --
---
+-- XML パース用ヘルパ
 --
 type TagParserT str u m = ParsecT [TS.Tag str] u m
 
@@ -60,13 +65,29 @@ tagClose :: (Show str, StringLike str, Monad m) => str -> TagParserT str u m ()
 tagClose name = tagEater $ (\x -> if TS.isTagCloseName name x then Just () else Nothing)
 
 txt :: (Show str, StringLike str, Monad m) => TagParserT str u m str
-txt = tagEater $ (\x -> if TS.isTagText x then Just (TS.fromTagText x) else Nothing)
+txt = do { tagEater (\x -> if TS.isTagText x then Just (TS.fromTagText x) else Nothing); } <|> return (Text.StringLike.fromString "")
+
+txt' :: (Show str, StringLike str, Monad m) => a -> TagParserT str u m str
 txt' _ = txt
 
-element name bdy = do { skipMany txt; ot <- tagOpen name; x <- bdy ot; skipMany txt; tagClose name; return x }
+
+element :: (Show str, StringLike str, Monad m) => str -> (TS.Tag str -> TagParserT str u m a) -> TagParserT str u m a
+element name bdy = do { ot <- Text.Parsec.try (skipText >> tagOpen name); x <- bdy ot; skipText; tagClose name; return x }
+  where skipText = skipMany $ tagEater (\x -> if TS.isTagText x then Just x else Nothing)
 
 parseTag :: (Show str, StringLike str, Monad m) => TagParserT str u m a -> u -> SourceName -> [TS.Tag str] -> m (Either RequestError a)
 parseTag p st name doc = runPT p st name doc >>= return . (either (Left . RequestError "Parser error" . show ) Right)
+
+
+readElement :: (Read b, Show str, StringLike str, Monad m) => str -> TagParserT str u m b
+readElement name = element name (\_ -> txt >>= return . read . Text.StringLike.toString)
+
+unixTimeElement :: (Show str, StringLike str, Monad m) => str -> TagParserT str u m ClockTime
+unixTimeElement name = return . flip TOD 0 =<< readElement name
+
+boolElement :: (Show str, StringLike str, Monad m) => str -> TagParserT str u m Bool
+boolElement name = do { x <- element name txt'; return $ Text.StringLike.toString x == "1"; }
+
 
 
 --
@@ -105,10 +126,9 @@ data ThumbInfo =
 
 
 getThumbInfo :: String -> CookieLoader IO -> IO (Either RequestError ThumbInfo)
-getThumbInfo videoID loader = do
-  doc <- sendRq  ("http://ext.nicovideo.jp/api/getthumbinfo/" ++ (encString False ok_url videoID)) loader
-  print doc
-  return $ runIdentity $ parseTag thumbResponseParser () "getthumbinfo" doc
+getThumbInfo videoID loader = sendRqXML url loader thumbResponseParser ()
+  where url = "http://ext.nicovideo.jp/api/getthumbinfo/" ++ (encString False ok_url videoID)
+
 
 thumbResponseParser :: (Monad m) => TagParserT String u m ThumbInfo
 thumbResponseParser = element "nicovideo_thumb_response" (\_ -> thumbParser)
@@ -145,11 +165,8 @@ tagsParser = element "tags" $ \opentag -> do {
 
 
 
-test = print $ runIdentity (parseTag thumbResponseParser () "test" doc)
-  where
-    doc = TS.parseTags "<nicovideo_thumb_response status=\"ok\">\n<thumb>\n<video_id>nm10937008</video_id>\n<title>\12304\20474\12398\22969\12364\12371\12435\12394\12395\21487\24859\12356\12431\12369\12364\12394\12356\12486\12540\12510\26354\12305\12354\12420\12379\12398\12486\12540\12510\12387\12413\12356\20309\12363</title>\n<description>\12495\12531\12489\12523\21517\65306DJ souchou\23550\35937\27005\26354\65306\12354\12420\12379\22909\12365\12394\12521\12494\12505\12364\12450\12491\12513\21270\12377\12427\12392\32862\12356\12390\24540\21215\12375\12414\12375\12383\12290\27468\35422\12399&hellip;\24605\12356\12388\12363\12394\12363\12387\12383\12435\12391\12377\12364\12289\12393\12358\12375\12414\12375\12423\12358\12363\12397\65311\12510\12452\12522\12473\65306mylist/15853453</description>\n<thumbnail_url>http://tn-skr1.smilevideo.jp/smile?i=10937008</thumbnail_url>\n<first_retrieve>2010-06-03T15:22:46+09:00</first_retrieve>\n<length>1:26</length>\n<movie_type>swf</movie_type>\n<size_high>2136635</size_high>\n<size_low>2136565</size_low>\n<view_counter>1732</view_counter>\n<comment_num>19</comment_num>\n<mylist_counter>8</mylist_counter>\n<last_res_body>BGM\65403\65394\65402\65392\12454\12455\12541(\65439&forall;\65377)\65417\65395 \12361\65311 \12371\12428\12399\12393\12385\12425\12391\12418\12356\12369 \20804\36020\12460\12531... </last_res_body>\n<watch_url>http://www.nicovideo.jp/watch/nm10937008</watch_url>\n<thumb_type>video</thumb_type>\n<embeddable>1</embeddable>\n<no_live_play>0</no_live_play>\n<tags domain=\"jp\">\n<tag lock=\"1\">\20474\12398\22969\12364\12371\12435\12394\12395\21487\24859\12356\12431\12369\12364\12394\12356\12486\12540\12510\26354</tag>\n<tag>\38899\27005</tag>\n<tag>\20462\27491\29256nm10970847</tag>\n</tags>\n<user_id>16824755</user_id>\n</thumb>\n</nicovideo_thumb_response>"
 --
---
+-- コミュニティアイコン
 --
 communityLargeThumbnailURL :: String -> String
 communityLargeThumbnailURL x = "http://icon.nicovideo.jp/community/" ++ x ++ ".jpg"
@@ -159,11 +176,11 @@ communitySmallThumbnailURL x = "http://icon.nicovideo.jp/community/s/" ++ x ++ "
 
 
 --
---
+-- 生放送
 --
 data MessageServer = MessageServer {
   msAddress :: String,
-  msPort :: Int,
+  msPort :: N.PortNumber,
   msThread :: String
   } deriving (Show)
 data LiveScreen = MainScreen | SubScreen deriving(Show)
@@ -171,55 +188,213 @@ data LiveContents = LiveContents {
   livecontentsCommand :: String,
   livecontentsScreen :: LiveScreen ,
   livecontentsStartTime :: ClockTime,
-  livecontentsDuration :: Int,
-  livecontentsTitle :: String
+  livecontentsDisableVideo :: Bool,
+  livecontentsDisableAudio :: Bool
   } deriving (Show)
+data Que = Que { queVPos :: Int, queMail :: String, queName :: String, queURL :: String } deriving (Show)
+data UserTwitterInfo = TwitterInfo {
+  twitterStatus :: String,
+  twitterAfterAuth :: Bool,
+  twitterScreenName :: String,
+  twitterFollowersCount :: Int,
+  twitterIsVIP :: Bool,
+  twitterProfileImageURL :: String,
+  twitterToken :: String
+  } deriving (Show)
+data LiveUser = LiveUser {
+  liveuserRoomLabel :: String,
+  liveuserRoomSeetNo :: String,
+  liveuserAge :: Int,
+  liveuserSex :: Int,
+  liveuserPrefecture :: Int,
+  liveuserNick :: String,
+  liveuserIsPremium :: Bool,
+  liveuserID :: String,
+  liveuserIsJoin :: Bool,
+  liveuserIMMUComment :: Int,
+  liveuserCanBroadcast :: Bool,
+  liveuserCanForceLogin :: Bool,
+  liveuserTwitterInfo :: UserTwitterInfo
+  } deriving (Show)
+data LiveTelop = LiveTelop Bool deriving Show
 data LiveStream = LiveStream {
-  liveTime :: ClockTime,
   liveID :: String,
+  liveWatchCount :: Int,
+  liveTitle :: String,
+  liveDescription :: String,
+  liveCommentCount :: Int,
+  liveDanjoCommentMode :: Bool,
+  liveHQStream :: Bool,
+  liveRelayComment :: Bool,
+  livePark :: Bool,
+  liveBourbonURL :: String,
+  liveFullVideo :: String,
+  liveAfterVideo :: String,
+  liveBeforeVideo :: String,
+  liveKickoutVideo :: String,
+  liveHeaderComment :: Bool,
+  liveFooterComment :: Bool,
+  livePluginDelay :: String,
+  livePluginURL :: String,
+  livePluginURLs :: String,
+  liveProviderType :: String,
   liveDefaultCommunity :: String,
+  liveArchive :: Bool,
+  liveIsDJStream :: Bool,
+  liveTwitterTag :: String,
+  liveIsOwner :: Bool,
+  liveOwnerID :: String,
+  liveIsReserved :: Bool,
   liveBaseTime :: ClockTime,
   liveOpenTime :: ClockTime,
-  liveWatchCount :: Int,
-  liveCommentCount :: Int,
-  liveMessageServer :: MessageServer,
-  liveContents :: [LiveContents]
+  liveStartTime :: ClockTime,
+  liveEndTime :: Maybe ClockTime,
+  liveTimeShiftTime :: Maybe ClockTime,
+  liveQue :: [Que],
+  liveTelop :: Maybe LiveTelop,
+  liveIchibaNoticeEnable :: Maybe Bool,
+  liveCommentLock :: Maybe Bool,
+  liveBackgroundComment :: Maybe Bool,
+  liveContents :: [LiveContents],
+  livePress :: (Int, Int, String)
   } deriving (Show)
-             
-{-
-getPlayerStatus :: String -> CookieLoader IO -> IO (Maybe LiveStream)
-getPlayerStatus liveid loader = do
-  xml <- sendRq uri loader
-  let (Document _ _ root _) = xmlParse path $ dropWhile ((/=) '<') xml
-  return $ listToMaybe $ map parseLiveStream $ (deep $ tag "getplayerstatus" `with` attrval ("status", AttValue [Left "ok"])) $ CElem root noPos
-  where
-    parseLiveStream x =
-      let st = head $ keep /> tag "stream" $ x
-      in LiveStream {      
-        liveTime = TOD (read $ fromJust $ getAttribute "time" x) 0,
-        liveID = getElementText "id" st,
-        liveDefaultCommunity = getElementText "default_community" st,
-        liveBaseTime = TOD (read $ getElementText "base_time" st) 0,
-        liveOpenTime = TOD (read $ getElementText "open_time" st) 0,
-        liveWatchCount = read $ getElementText "watch_count" st,
-        liveCommentCount = read $ getElementText "comment_count" st,
-        liveMessageServer = parseMessageServer $ head $ keep /> tag "ms" $ x,
-        liveContents = map parseContents $ keep /> tag "contents_list" /> tag "contents" $ x
-        }
-    parseMessageServer x = MessageServer {
-      msAddress = getElementText "addr" x,
-      msPort = read $ getElementText "port" x,
-      msThread = getElementText "thread" x
-      }
-    parseContents x = LiveContents {
-      livecontentsCommand = tagTextContent x,
-      livecontentsScreen = case fromJust $ getAttribute "id" x of { "main" -> MainScreen; "sub" -> SubScreen },
-      livecontentsStartTime = TOD (read $ fromJust $ getAttribute "start_time" x) 0,
-      livecontentsDuration = read $ fromJust $ getAttribute "duration" x,
-      livecontentsTitle = fromJust $ getAttribute "title" x
-      }
-    path = "http://live.nicovideo.jp/api/getplayerstatus?v=" ++ (escapeURIString isAllowedInURI liveid)
-    (Just uri) = parseURI path
+data RTMP = RTMP { rtmpIsFMS :: Bool, rtmpURL :: String, rtmpTicket :: String } deriving Show
+data LiveTwitter = LiveTwitter { twitterLiveEnabled :: Bool, twitterVIPModeCount :: Int, twitterLiveAPIURL :: String } deriving Show
+data PlayerStatus = 
+  PlayerStatus {
+    playerStatusTime :: ClockTime,
+    playerStatusLiveStream :: LiveStream,
+    playerStatusUser :: LiveUser,
+    playerRTMP :: RTMP,
+    playerStatusMessageServer :: MessageServer,
+    playerTIDList :: [String],
+    playerTwitter :: LiveTwitter
+    } 
+  | PlayerUnknownError
+  | PlayerComingsoon
+  deriving Show
+
+getPlayerStatus :: String -> CookieLoader IO -> IO (Either RequestError PlayerStatus)
+getPlayerStatus liveid loader = sendRqXML url loader playerStatusParser ()
+  where url = "http://live.nicovideo.jp/api/getplayerstatus/" ++ (encString False ok_url liveid)
+
+playerStatusParser :: (Monad m) => TagParserT String u m PlayerStatus
+playerStatusParser = 
+  element "getplayerstatus" $ \ot -> do {
+    playerStatusLiveStream <- element "stream" $ \_ -> do {
+       liveID <- element "id" txt';
+       liveWatchCount <- readElement "watch_count";
+       liveTitle <- element "title" txt';
+       liveDescription <- element "description" txt';
+       liveCommentCount <- readElement "comment_count";
+       liveDanjoCommentMode <- boolElement "danjo_comment_mode";
+       liveHQStream <- boolElement "hqstream";                        
+       liveRelayComment <- boolElement "relay_comment";
+       livePark <- boolElement "park";
+       liveBourbonURL <- element "bourbon_url" txt';
+       liveFullVideo <- element "full_video" txt';
+       liveAfterVideo <- element "after_video" txt';
+       liveBeforeVideo <- element "before_video" txt';
+       liveKickoutVideo <- element "kickout_video" txt';
+       liveHeaderComment <- boolElement "header_comment";
+       liveFooterComment <- boolElement "footer_comment";
+       livePluginDelay <- element "plugin_delay" txt';
+       livePluginURL <- element "plugin_url" txt';
+       livePluginURLs <- element "plugin_urls" txt';
+       liveProviderType <- element "provider_type" txt';
+       liveDefaultCommunity <- element "default_community" txt';
+       liveArchive <- boolElement "archive";
+       liveIsDJStream <- boolElement "is_dj_stream";
+       liveTwitterTag <- element "twitter_tag" txt';
+       liveIsOwner <- boolElement "is_owner";
+       liveOwnerID <- element "owner_id" txt';
+       liveIsReserved <- boolElement "is_reserved";
+       liveBaseTime <- unixTimeElement "base_time";
+       liveOpenTime <- unixTimeElement "open_time";
+       liveStartTime <- unixTimeElement "start_time";
+       -- ここから終了している枠のみ
+       liveEndTime <- option Nothing $ unixTimeElement "end_time" >>= return . Just;
+       liveTimeShiftTime <- option Nothing $ unixTimeElement "timeshift_time" >>= return . Just;
+       liveQue <- option [] $ element "quesheet" (\_ -> many $ element "que" (\ot -> do { 
+                                                                                 x <- txt; 
+                                                                                 return $ Que (read $ TS.fromAttrib "vpos" ot) 
+                                                                                 (TS.fromAttrib "mail" ot) (TS.fromAttrib "name" ot) x
+                                                                                 }) );
+       -- ここまで。そして、ここから放送中の枠のみ
+       liveTelop <- option Nothing $ element "telop" $ \_ -> do { x <- boolElement "enable"; return $ LiveTelop x } >>= return . Just;
+       liveIchibaNoticeEnable <- option Nothing $ boolElement "ichiba_notice_enable" >>= return . Just;
+       liveCommentLock <- option Nothing $ boolElement "comment_lock" >>= return . Just;
+       liveBackgroundComment <- option Nothing $ boolElement "background_comment" >>= return . Just;
+       liveContents <- option [] $ element "contents_list" $ 
+                       \_ -> let convID "main" = MainScreen
+                                 convID "sub" = SubScreen
+                                 convID _ = undefined
+                             in  do {
+                               many $ element "contents" (\ot -> do { x <- txt;
+                                                                      return $ LiveContents x 
+                                                                      (convID $ TS.fromAttrib "id" ot)
+                                                                      (TOD (read $ TS.fromAttrib "start_time" ot) 0)
+                                                                      (TS.fromAttrib "disableVideo" ot == "1")
+                                                                      (TS.fromAttrib "disableAudio" ot == "1"); })
+                               };
+       -- ここまで。
+       livePress <- element "press" 
+                    (\_ -> do { x <- readElement "display_lines"; y <- readElement "display_time"; z <- element "style_conf" txt'; return (x,y,z) });
+       return $ LiveStream {..}
+       };
+    playerStatusUser <- element "user" $ \_ -> do {
+      liveuserRoomLabel <- element "room_label" txt';
+      liveuserRoomSeetNo <- element "room_seetno" txt';
+      liveuserAge <- readElement "userAge";
+      liveuserSex <- readElement "userSex";
+      liveuserPrefecture <- readElement "userPrefecture";
+      liveuserNick <- element "nickname" txt';
+      liveuserIsPremium <- boolElement "is_premium";
+      liveuserID <- element "user_id" txt';
+      liveuserIsJoin <- boolElement "is_join";
+      liveuserIMMUComment <- readElement "immu_comment";
+      liveuserCanBroadcast <- boolElement "can_broadcast";
+      liveuserCanForceLogin <- boolElement "can_forcelogin";
+      liveuserTwitterInfo <- element "twitter_info" $ \_ -> do {
+        twitterStatus <- element "status" txt';
+        twitterAfterAuth <- boolElement "after_auth";
+        twitterScreenName <- element "screen_name" txt';
+        twitterFollowersCount <- readElement "followers_count";
+        twitterIsVIP <- boolElement "is_vip";
+        twitterProfileImageURL <- element "profile_image_url" txt';
+        twitterToken <- element "tweet_token" txt';
+        return $ TwitterInfo {..}
+        };
+      return $ LiveUser {..}
+      };
+    playerRTMP <- element "rtmp" $ 
+                  \ot -> do { x <- element "url" txt'; y <- element "ticket" txt'; return $ RTMP (TS.fromAttrib "is_fms" ot == "1") x y };
+    playerStatusMessageServer <- element "ms" messageServerParser;
+    playerTIDList <- element "tid_list" $ return . const [];
+    playerTwitter <- element "twitter" $ \_ -> do {
+      twitterLiveEnabled <- boolElement "live_enabled";
+      twitterVIPModeCount <- readElement "vip_mode_count";
+      twitterLiveAPIURL <- element "live_api_url" txt';
+      return $ LiveTwitter {..} };
+    element "player" $ \_ -> element "error_report" txt';
+    let playerStatusTime = (TOD (read $ TS.fromAttrib "time" ot) 0)
+    in return $ PlayerStatus  {..}
+}
 
 
--}
+
+messageServerParser :: (Monad m) => a -> TagParserT String u m MessageServer
+messageServerParser _ = do {
+  msAddress <- element "addr" txt';
+  portnum <- readElement "port";
+  msPort <- return $ N.PortNum $ fromIntegral (portnum :: Int);
+  msThread <- element "thread" txt';
+  return $ MessageServer {..}
+  }
+
+
+--
+-- 生放送コメント
+--
+
+
