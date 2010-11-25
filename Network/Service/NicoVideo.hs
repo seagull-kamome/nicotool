@@ -1,38 +1,26 @@
 {-# LANGUAGE ViewPatterns, PackageImports, RecordWildCards, NamedFieldPuns #-}
 module Network.Service.NicoVideo 
        (ThumbInfo (..), Tag (..), getThumbInfo , 
-        PlayerStatus (..), MessageServer (..), LiveScreen (..), LiveContents (..), 
+        PlayerStatus (..), LiveScreen (..), LiveContents (..), 
         Que (..), UserTwitterInfo (..), LiveUser (..), LiveTelop (..), LiveStream (..), RTMP(..),
         LiveTwitter (..),
         getPlayerStatus,
         communityLargeThumbnailURL, communitySmallThumbnailURL,
         --
-        ChatClient, Chat (..), watchChat,
-        --
-        AlartStatus (..), AlartListener, watchAlart,
         StreamInfo (..), getStreamInfo
        ) where
 
-import Control.Monad.Trans
-import Control.Monad.Identity
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, modifyMVar, readMVar)
-import Control.Failure
 import System.Time
-import qualified Data.ByteString.Char8 as C8
-import qualified Data.ByteString.Lazy.UTF8 as U8
 import qualified Text.HTML.TagSoup as TS
 import Text.Parsec
-import qualified Network.HTTP.Enumerator as NH
 import Network.URL
-import qualified Network.Socket as N
-import qualified Network.XMLSocket as XS
 
 import Utils.Browser
 import Utils.Browser.GoogleChrome
 
 import Network.Service.NicoVideo.XML
 import Network.Service.NicoVideo.HTTP
-
+import Network.Service.NicoVideo.Chat
 
 --
 --
@@ -116,11 +104,6 @@ communitySmallThumbnailURL x = "http://icon.nicovideo.jp/community/s/" ++ x ++ "
 --
 -- 生放送
 --
-data MessageServer = MessageServer {
-  msAddress :: String,
-  msPort :: String,
-  msThread :: String
-  } deriving (Show)
 data LiveScreen = MainScreen | SubScreen deriving(Show)
 data LiveContents = LiveContents {
   livecontentsCommand :: String,
@@ -321,15 +304,6 @@ playerStatusParser =
 
 
 
-messageServerParser :: (Monad m) => TagParserT String u m MessageServer
-messageServerParser = element "ms" (\_ -> do {
-                                       msAddress <- element "addr" txt';
-                                       msPort <- element "port" txt';
-                                       msThread <- element "thread" txt';
-                                       return $ MessageServer {..}
-                                       })
-
-
 
 --
 --
@@ -366,131 +340,4 @@ getStreamInfo liveid loader = sendRqXML url loader streamInfoParser ()
 
 
 
-
---
--- コメント
---
-newtype ChatClient = ChatClient XS.XMLSocket
-data UserRegion = FreeRider | Premium | Alart | MovieOwner | SysOp | Unknown String deriving (Show, Eq)
-data Chat = 
-  Chat { 
-    chatResNo :: Int, 
-    chatDate :: ClockTime,
-    chatUserID :: String, 
-    chatVPos :: String, 
-    chatIsPremium :: UserRegion,
-    chatMail :: String, 
-    chatAnonymity :: Bool,
-    chatMessage :: String
-    } deriving Show
-type ChatListener = ChatClient -> Chat -> IO ()
-type ChatCloser = ChatClient -> IO ()
-
-watchChat :: (MonadIO m) => MessageServer -> ChatListener -> ChatCloser -> m ChatClient
-watchChat (MessageServer {..})  listener closer = liftIO $ do
-  state <- newEmptyMVar
-  (addr:_) <- N.getAddrInfo Nothing (Just msAddress) (Just msPort)
-  sock <- XS.startClient addr (onReceive state) (onClose state)
-  putMVar state ("", 0 :: Int, ChatClient sock)
-  XS.send sock [TS.TagOpen "thread" [("thread", msThread), ("res_from", "-200"), ("version", "20061206")], TS.TagClose "thread" ]
-  return $ ChatClient sock
-  where
-    heartbeat = undefined
-    onReceive state _ (x@(TS.TagOpen "thread" _):_ ) =
-      modifyMVar state (\(ticket, last_res, client) -> return (((TS.fromAttrib "ticket" x), (read $ TS.fromAttrib "last_res" x), client), ()) )
-    onReceive state sock (x@(TS.TagOpen "chat" _):TS.TagText chatMessage:_) = do
-      (_,_,client) <- readMVar state
-      if chatIsPremium == MovieOwner && chatMessage == "/disconnect"
-        then do { XS.closeSession sock; return () }
-        else listener client $ Chat {..}
-      where
-        chatResNo = read $ TS.fromAttrib "no" x 
-        chatDate = TOD (read $ TS.fromAttrib "date" x) 0
-        chatUserID = TS.fromAttrib "user_id" x
-        chatVPos = TS.fromAttrib "vpos" x
-        chatIsPremium = case TS.fromAttrib "premium" x of { 
-          "" -> FreeRider; "1" -> Premium; "2" -> Alart; "3" -> MovieOwner; "4" -> SysOp; x -> Unknown x }
-        chatMail = TS.fromAttrib "mail" x
-        chatAnonymity = TS.fromAttrib "anonymity" x == "1"
-    onReceive _ _ xs = do
-      mapM_ putStr ["Unknwon message", TS.renderTags xs, "\n"]
-    onClose state sock = do { (_,_,client) <- readMVar state; closer client; return () }
-                
-
-{-
-testChat x = do  
-  Right sts <- getPlayerStatus x cookieLoader
-  f <- newEmptyMVar
-  watchChat (playerStatusMessageServer sts) onChatReceived (\_ -> putMVar f True)
-  takeMVar f
-  return ()
-  where
-    cookieLoader = Utils.Browser.GoogleChrome.cookieLoader
-    onChatReceived client (Chat {..})= do
-      mapM_ putStr $ intersperse " | " [show chatResNo, show chatDate, chatUserID, chatMessage, show chatIsPremium, chatMail, "\n"]
-      return ()
--}
-  
---
--- Alart
---
-data AlartStatus = AlartStatus {
-  alartUserID :: String,
-  alartUserHash :: String,
-  alartUserName :: String,
-  alartUserPrefecture:: String,
-  alartUserAge :: Int,
-  alartUserSex :: String,
-  alartUserIsPremium :: Bool,
-  alartCommunities :: [String],
-  alartMessageServer :: MessageServer
-  } deriving Show
-
-type AlartListener = (String, String, String) -> IO ()
-
-watchAlart :: (MonadIO m) => String -> String -> AlartListener -> IO () -> m (Maybe AlartStatus)
-watchAlart userid password listener closer = liftIO $ do
-  -- Login
-  (NH.Response cd _ bdy1) <- NH.parseUrl loginurl1 >>= 
-                             NH.httpLbsRedirect . NH.urlEncodedBody [(C8.pack "mail", C8.pack userid),
-                                                                     (C8.pack "password", C8.pack password)]
-  when (cd < 200 || cd >= 300) $ liftIO $ failure $ NH.StatusCodeException cd bdy1
-  let doc1 = U8.toString bdy1
-  case runIdentity $ parseTag userResponseParser () loginurl1 $ TS.parseTags $ tail $ dropWhile (/= '\n') doc1 of
-    Left err -> liftIO (print doc1 >> print err >> return Nothing)
-    Right loginticket ->
-      let loginurl2 = "http://live.nicovideo.jp/api/getalertstatus?ticket=" ++ encString False ok_url loginticket
-      in do
-        doc2 <- NH.simpleHttp loginurl2 >>= return . U8.toString
-        case runIdentity $ parseTag alartStatusParser () loginurl2 $ TS.parseTags $ tail $ dropWhile (/= '\n') doc2 of
-          Left err -> print doc2 >> print err >> return Nothing
-          Right sts@(AlartStatus {..}) -> do
-            watchChat alartMessageServer
-              (\_ (Chat { chatMessage }) ->
-                let (liveid, rest) = break (== ',') chatMessage
-                    (comid, tail -> ownerid) = break (== ',') $ tail rest
-                in  if rest /= "" && elem comid alartCommunities then listener (liveid, comid, ownerid) else return ())
-              (const closer)
-            return $ Just sts
-  where
-    loginurl1 = "https://secure.nicovideo.jp/secure/login?site=nicolive_antenna"
-    userResponseParser :: (Monad m) => TagParserT String u m String
-    userResponseParser = element "nicovideo_user_response" 
-                         (\ot -> if TS.fromAttrib "status" ot == "ok" 
-                                 then element "ticket" txt'
-                                 else fail "Login failed")
-    alartStatusParser :: (Monad m) => TagParserT String u m AlartStatus
-    alartStatusParser = element "getalertstatus"
-                        (\_ -> do {
-                            alartUserID <- element "user_id" txt';
-                            alartUserHash <- element "user_hash" txt';
-                            alartUserName <- element "user_name" txt';
-                            alartUserPrefecture <- element "user_prefecture" txt';
-                            alartUserAge <- readElement "user_age";
-                            alartUserSex <- element "user_sex" txt';
-                            alartUserIsPremium <- boolElement "is_premium";
-                            alartCommunities <- element "communities" (\_ -> many $ element "community_id" txt');
-                            alartMessageServer <- messageServerParser;
-                            return $ AlartStatus {..}
-                            })
 
