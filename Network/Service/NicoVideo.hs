@@ -15,15 +15,13 @@ module Network.Service.NicoVideo
 
 import Control.Monad.Trans
 import Control.Monad.Identity
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, modifyMVar, readMVar, takeMVar)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, modifyMVar, readMVar)
 import Control.Failure
 import System.Time
-import Data.List (intersperse)
 import qualified Data.ByteString.Char8 as C8
 import qualified Data.ByteString.Lazy.UTF8 as U8
 import qualified Text.HTML.TagSoup as TS
 import Text.Parsec
-import Text.StringLike
 import qualified Network.HTTP.Enumerator as NH
 import Network.URL
 import qualified Network.Socket as N
@@ -32,76 +30,8 @@ import qualified Network.XMLSocket as XS
 import Utils.Browser
 import Utils.Browser.GoogleChrome
 
-
---
--- HTTPリクエスト用ヘルパ
---
-sendRq :: (MonadIO m) => String -> CookieLoader m ->  m (U8.ByteString)
-sendRq url loader = do
-  rq <- liftIO $ NH.parseUrl url
-  cookies <- loader $ C8.unpack $ NH.host rq
-  let cookie_hdr = concatMap (\(x,y) -> encString False ok_url x ++ "=" ++ encString False ok_url y ++ ";") cookies
-  (NH.Response cd _ bdy) <- liftIO $ NH.httpLbsRedirect
-                            (rq { NH.requestHeaders = [ (C8.pack "Cookie", C8.pack cookie_hdr) ]})
-  when (cd < 200 || cd >= 300) $ liftIO $ failure $ NH.StatusCodeException cd bdy
-  return bdy
-
-sendRqXML :: (MonadIO m) => String -> CookieLoader m ->  TagParserT String u Identity a -> u -> m (Either RequestError a)
-sendRqXML url loader parser st = do
-  doc <- sendRq url loader >>= return . U8.toString
-  let res = runIdentity $ parseTag parser st url $ TS.parseTags $ tail $ dropWhile (/= '\n') doc
-  case res of
-    Left err -> liftIO (print doc >> print err)
-    _ -> return ()
-  return res;
-
-
-
-
---
--- XML パース用ヘルパ
---
-type TagParserT str u m = ParsecT [TS.Tag str] u m
-
-tagEater :: (Show str, StringLike str, Monad m) => (TS.Tag str -> Maybe a) -> TagParserT str u m a
-tagEater = tokenPrim show (\x _ _ -> setSourceLine x (sourceLine x + 1))
-
-tagOpen :: (Show str, StringLike str, Monad m) => str -> TagParserT str u m (TS.Tag str)
-tagOpen name = tagEater $ (\x -> if TS.isTagOpenName name x then Just x else Nothing)
-
-tagClose :: (Show str, StringLike str, Monad m) => str -> TagParserT str u m ()
-tagClose name = tagEater $ (\x -> if TS.isTagCloseName name x then Just () else Nothing)
-
-txt :: (Show str, StringLike str, Monad m) => TagParserT str u m str
-txt = do { tagEater (\x -> if TS.isTagText x then Just (TS.fromTagText x) else Nothing); } <|> return (Text.StringLike.fromString "")
-
-txt' :: (Show str, StringLike str, Monad m) => a -> TagParserT str u m str
-txt' _ = txt
-
-
-element :: (Show str, StringLike str, Monad m) => str -> (TS.Tag str -> TagParserT str u m a) -> TagParserT str u m a
-element name bdy = do { ot <- Text.Parsec.try (skipText >> tagOpen name); x <- bdy ot; skipText; tagClose name; return x }
-  where skipText = skipMany $ tagEater (\x -> if TS.isTagText x then Just x else Nothing)
-
-parseTag :: (Show str, StringLike str, Monad m) => TagParserT str u m a -> u -> SourceName -> [TS.Tag str] -> m (Either RequestError a)
-parseTag p st name doc = runPT p st name doc >>= return . (either (Left . RequestError "Parser error" . show ) Right)
-
-
-readElement :: (Read b, Show str, StringLike str, Monad m) => str -> TagParserT str u m b
-readElement name = element name (\_ -> txt >>= return . read . Text.StringLike.toString)
-
-unixTimeElement :: (Show str, StringLike str, Monad m) => str -> TagParserT str u m ClockTime
-unixTimeElement name = return . flip TOD 0 =<< readElement name
-
-boolElement :: (Show str, StringLike str, Monad m) => str -> TagParserT str u m Bool
-boolElement name = do { x <- element name txt'; return $ Text.StringLike.toString x == "1"; }
-
-
-
---
---
---
-data RequestError = RequestError String String deriving(Show)
+import Network.Service.NicoVideo.XML
+import Network.Service.NicoVideo.HTTP
 
 
 --
