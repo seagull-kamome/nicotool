@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 {-
 - XML Socket module for Haskell
 - Copyright 2010 (c) HATTORI,Hiroki
@@ -26,22 +27,20 @@ data XMLSocketServer = XMLSocketServer N.Socket (MVar Bool) [XMLSocket]
 
 
 
-startClient :: String -> N.PortNumber -> ReceiveHandler -> CloseHandler -> IO XMLSocket
-startClient host port receiver closer = do
-	s <- N.socket N.AF_INET N.Stream N.defaultProtocol
-        hostaddr <- N.inet_addr host
-	N.connect s $ N.SockAddrInet port hostaddr
+startClient :: N.AddrInfo -> ReceiveHandler -> CloseHandler -> IO XMLSocket
+startClient addr receiver closer = do
+	s <- N.socket (N.addrFamily addr) N.Stream N.defaultProtocol
+	N.connect s $ N.addrAddress addr
 	newsock <- newMVar False >>= return . XMLSocket s
 	forkIO $ sessionLoop newsock receiver closer
 	return newsock
 
 
 
-startServer :: Maybe String -> N.PortNumber -> ReceiveHandler -> CloseHandler -> IO XMLSocketServer
-startServer bindaddr bindport receiver closer = do
-	s <- N.socket N.AF_INET N.Stream N.defaultProtocol
-	bindaddr' <- maybe (return N.iNADDR_ANY) N.inet_addr bindaddr
-        N.bindSocket s $ N.SockAddrInet bindport bindaddr'
+startServer :: N.AddrInfo -> ReceiveHandler -> CloseHandler -> IO XMLSocketServer
+startServer addr receiver closer = do
+	s <- N.socket (N.addrFamily addr)  N.Stream N.defaultProtocol
+        N.bindSocket s $ N.addrAddress addr
 	N.listen s 5
         newmv <- newMVar False
         let newsocket = XMLSocketServer s newmv []
@@ -61,20 +60,20 @@ stopServer = undefined -- FIXME:
 
 sessionLoop :: XMLSocket -> ReceiveHandler -> CloseHandler -> IO ()
 sessionLoop s@(XMLSocket sock flg) receiver closer =
-	let fin = closer s >> N.sClose sock
-	    loop buf = do
-		stopRequired <- readMVar flg
-		connected <- N.sIsConnected sock
-		if stopRequired || not connected
-		   then fin
-		   else do
-			newchunk <- NBS.recv sock 1024
-			if LBS.length newchunk == 0
-			   then fin
-			   else let f (x:[]) = loop x
-                                    f (x:xs) = receiver s (TS.parseTags $ UTF.toString x) >> f xs
-				in f $ LBS.split '\0' (LBS.append buf newchunk)
-	in loop $ LBS.empty
+  let fin = closer s >> N.sClose sock
+      loop buf = do
+        stopRequired <- readMVar flg
+        connected <- N.sIsConnected sock
+        if stopRequired || not connected
+          then fin
+          else do
+            newchunk <- NBS.recv sock 1024
+            if LBS.length newchunk == 0
+              then fin
+              else let f (x:[]) = loop x
+                       f (x:xs) = receiver s (TS.parseTags $ UTF.toString x) >> f xs
+                   in f $ LBS.split '\0' (LBS.append buf newchunk)
+  in loop $ LBS.empty
 
 
 send :: XMLSocket -> [TS.Tag String] -> IO ()
