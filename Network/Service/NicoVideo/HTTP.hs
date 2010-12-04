@@ -23,17 +23,18 @@ import Network.Service.NicoVideo.XML
 
 
 
-sendRq :: (MonadIO m) => String -> CookieLoader m ->  m (U8.ByteString)
+sendRq :: (MonadIO m) => String -> Maybe (CookieLoader m) ->  m (U8.ByteString)
 sendRq url loader = do
   rq <- liftIO $ NH.parseUrl url
-  cookies <- loader $ C8.unpack $ NH.host rq
-  let cookie_hdr = concatMap (\(x,y) -> encString False ok_url x ++ "=" ++ encString False ok_url y ++ ";") cookies
+  cookie_hdr <- case loader of
+    Nothing -> return ""
+    Just ldr -> ldr (C8.unpack (NH.host rq)) >>= return . concatMap (\(x,y) -> encString False ok_url x ++ "=" ++ encString False ok_url y ++ ";")
   (NH.Response cd _ bdy) <- liftIO $ NH.httpLbsRedirect
                             (rq { NH.requestHeaders = [ (C8.pack "Cookie", C8.pack cookie_hdr) ]})
   when (cd < 200 || cd >= 300) $ liftIO $ failure $ NH.StatusCodeException cd bdy
   return bdy
 
-sendRqXML :: (MonadIO m) => String -> CookieLoader m ->  TagParserT String u Identity a -> u -> m (Either RequestError a)
+sendRqXML :: (MonadIO m) => String -> Maybe (CookieLoader m) ->  TagParserT String u Identity a -> u -> m (Either RequestError a)
 sendRqXML url loader parser st = do
   doc <- sendRq url loader >>= return . U8.toString
   let res = runIdentity $ parseTag parser st url $ TS.parseTags $ tail $ dropWhile (/= '\n') doc

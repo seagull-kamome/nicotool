@@ -11,7 +11,7 @@ module Network.Service.NicoVideo.Chat
         --
         ChatClient (..), UserRegion (..), Chat (..),
         ChatListener, ChatCloser,
-        watchChat
+        watchChat, stopChat
        ) where
 
 import Control.Monad.Trans (MonadIO, liftIO)
@@ -66,13 +66,13 @@ type ChatCloser = ChatClient -> IO ()
 --
 --
 --
-watchChat :: (MonadIO m) => MessageServer -> ChatListener -> ChatCloser -> m ChatClient
-watchChat (MessageServer {..})  listener closer = liftIO $ do
+watchChat :: (MonadIO m) => MessageServer -> Int -> ChatListener -> ChatCloser -> m ChatClient
+watchChat (MessageServer {..})  lognum listener closer = liftIO $ do
   state <- newEmptyMVar
   (addr:_) <- N.getAddrInfo Nothing (Just msAddress) (Just msPort)
   sock <- XS.startClient addr (onReceive state) (onClose state)
   putMVar state ("", 0 :: Int, ChatClient sock)
-  XS.send sock [TS.TagOpen "thread" [("thread", msThread), ("res_from", "-200"), ("version", "20061206")], TS.TagClose "thread" ]
+  XS.send sock [TS.TagOpen "thread" [("thread", msThread), ("res_from", show $ negate lognum), ("version", "20061206")], TS.TagClose "thread" ]
   return $ ChatClient sock
   where
     heartbeat = undefined
@@ -110,3 +110,6 @@ testChat x = do
       mapM_ putStr $ intersperse " | " [show chatResNo, show chatDate, chatUserID, chatMessage, show chatIsPremium, chatMail, "\n"]
       return ()
 -}
+
+stopChat :: ChatClient -> IO ()
+stopChat (ChatClient sock) = XS.closeSession sock >> return ()

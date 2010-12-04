@@ -35,7 +35,7 @@ data AlartStatus = AlartStatus {
 
 type AlartListener = (String, String, String) -> IO ()
 
-watchAlart :: (MonadIO m) => String -> String -> AlartListener -> IO () -> m (Maybe AlartStatus)
+watchAlart :: (MonadIO m) => String -> String -> AlartListener -> IO () -> m (Maybe (ChatClient, AlartStatus))
 watchAlart userid password listener closer = liftIO $ do
   -- Login
   (NH.Response cd _ bdy1) <- NH.parseUrl loginurl1 >>= 
@@ -52,13 +52,13 @@ watchAlart userid password listener closer = liftIO $ do
         case runIdentity $ parseTag alartStatusParser () loginurl2 $ TS.parseTags $ tail $ dropWhile (/= '\n') doc2 of
           Left err -> print doc2 >> print err >> return Nothing
           Right sts@(AlartStatus {..}) -> do
-            watchChat alartMessageServer
+            client <- watchChat alartMessageServer 0
               (\_ (Chat { chatMessage }) ->
                 let (liveid, rest) = break (== ',') chatMessage
                     (comid, tail -> ownerid) = break (== ',') $ tail rest
                 in  if rest /= "" && elem comid alartCommunities then listener (liveid, comid, ownerid) else return ())
               (const closer)
-            return $ Just sts
+            return $ Just (client, sts)
   where
     loginurl1 = "https://secure.nicovideo.jp/secure/login?site=nicolive_antenna"
     userResponseParser :: (Monad m) => TagParserT String u m String

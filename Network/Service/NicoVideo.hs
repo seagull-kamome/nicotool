@@ -52,7 +52,7 @@ data ThumbInfo =
 
 
 getThumbInfo :: String -> CookieLoader IO -> IO (Either RequestError ThumbInfo)
-getThumbInfo videoID loader = sendRqXML url loader thumbResponseParser ()
+getThumbInfo videoID loader = sendRqXML url (Just loader) thumbResponseParser ()
   where url = "http://ext.nicovideo.jp/api/getthumbinfo/" ++ (encString False ok_url videoID)
 
 
@@ -196,7 +196,7 @@ data PlayerStatus =
   deriving Show
 
 getPlayerStatus :: String -> CookieLoader IO -> IO (Either RequestError PlayerStatus)
-getPlayerStatus liveid loader = sendRqXML url loader playerStatusParser ()
+getPlayerStatus liveid loader = sendRqXML url (Just loader) playerStatusParser ()
   where url = "http://live.nicovideo.jp/api/getplayerstatus/" ++ (encString False ok_url liveid)
 
 playerStatusParser :: (Monad m) => TagParserT String u m PlayerStatus
@@ -232,9 +232,9 @@ playerStatusParser =
        liveIsReserved <- boolElement "is_reserved";
        liveBaseTime <- unixTimeElement "base_time";
        liveOpenTime <- unixTimeElement "open_time";
+       liveEndTime <- option Nothing $ unixTimeElement "end_time" >>= return . Just;
        liveStartTime <- unixTimeElement "start_time";
        -- ここから終了している枠のみ
-       liveEndTime <- option Nothing $ unixTimeElement "end_time" >>= return . Just;
        liveTimeShiftTime <- option Nothing $ unixTimeElement "timeshift_time" >>= return . Just;
        liveQue <- option [] $ element "quesheet" (\_ -> many $ element "que" (\ot -> do { 
                                                                                  x <- txt; 
@@ -316,26 +316,35 @@ data StreamInfo =
     streamProviderType :: String,
     streamDefaultCommunity :: String
     } deriving Show
-getStreamInfo :: String -> CookieLoader IO -> IO (Either RequestError (StreamInfo, (String, String)) )
-getStreamInfo liveid loader = sendRqXML url loader streamInfoParser ()
+getStreamInfo :: String -> IO (Either RequestError (StreamInfo, String, String, [(String,String)]) )
+getStreamInfo liveid = sendRqXML url Nothing streamInfoParser ()
   where 
-    url = "http://live.nicovideo.jp/api/getstreaminfo/lv" ++ liveid
-    streamInfoParser :: (Monad m) => TagParserT String u m (StreamInfo, (String, String))
-    streamInfoParser = do {
-      streaminfo <- element "getstreaminfo" 
+    url = "http://live.nicovideo.jp/api/getstreaminfo/" ++ liveid
+    streamInfoParser :: (Monad m) => TagParserT String u m (StreamInfo, String, String, [(String, String)])
+    streamInfoParser =
+      element "getstreaminfo" 
                     (\ot -> do {
                         streamLiveID <- element "request_id" txt';
-                        element "streaminfo" (\_ -> do {
-                                                 streamTitle <- element "title" txt';
-                                                 streamDescription <- element "description" txt';
-                                                 streamProviderType <- element "provider_type" txt';
-                                                 streamDefaultCommunity <- element "default_community" txt';
-                                                 return $ StreamInfo {..} }) });
-      communityinfo <- element "communityinfo" (\_ -> do {
-                                                   x <- element "name" txt';
-                                                   y <- element "thumbnail" txt';
-                                                   return (x,y); });
-      return (streaminfo, communityinfo) }
+                        streaminfo <- element "streaminfo" (\_ -> do {
+                                                               streamTitle <- element "title" txt';
+                                                               streamDescription <- element "description" txt';
+                                                               streamProviderType <- element "provider_type" txt';
+                                                               streamDefaultCommunity <- element "default_community" txt';
+                                                               return $ StreamInfo {..} });
+                        (comName, thumbnail) <- element "communityinfo" (\_ -> do {
+                                                                            x <- element "name" txt';
+                                                                            y <- element "thumbnail" txt';
+                                                                            return (x,y) });
+                        ads <- option [] $ do {
+                          element "adsense" (\_ -> many $ element "item" $ \_ -> do {
+                                                adname <- element "name" txt';
+                                                adurl <- element "url" txt';
+                                                return (adname, adurl)
+                                                })
+                          };
+                        return (streaminfo, comName, thumbnail, ads)
+                        })
+
 
 
 
