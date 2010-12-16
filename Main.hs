@@ -1,5 +1,6 @@
 #! /usr/bin/runhaskell -threaded
 {-# LANGUAGE RecordWildCards #-}
+module Main () where
 
 import Control.Concurrent.MVar (newMVar, modifyMVar_)
 import Control.Concurrent (forkIO, yield)
