@@ -47,7 +47,7 @@ messageServerParser = element "ms" (\_ -> do {
 --
 --
 newtype ChatClient = ChatClient XS.XMLSocket
-data UserRegion = FreeRider | Premium | Alart | MovieOwner | SysOp | Unknown String deriving (Show, Eq)
+data UserRegion = FreeRider | Premium | Alart | MovieOwner | SysOp | BSP Int| Unknown String deriving (Show, Eq)
 data Chat = 
   Chat { 
     chatResNo :: Int, 
@@ -89,7 +89,7 @@ watchChat (MessageServer {..})  lognum listener closer = liftIO $ do
         chatUserID = TS.fromAttrib "user_id" x
         chatVPos = TS.fromAttrib "vpos" x
         chatIsPremium = case TS.fromAttrib "premium" x of { 
-          "" -> FreeRider; "1" -> Premium; "2" -> Alart; "3" -> MovieOwner; "4" -> SysOp; x -> Unknown x }
+          "" -> FreeRider; "1" -> Premium; "2" -> Alart; "3" -> MovieOwner; "4" -> SysOp; "6" -> BSP 1; "7" -> BSP 2; x -> Unknown x }
         chatMail = TS.fromAttrib "mail" x
         chatAnonymity = TS.fromAttrib "anonymity" x == "1"
     onReceive _ _ xs = do

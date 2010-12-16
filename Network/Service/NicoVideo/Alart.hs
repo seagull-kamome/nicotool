@@ -8,6 +8,7 @@
 -}
 module Network.Service.NicoVideo.Alart (AlartStatus (..), AlartListener, watchAlart) where
 
+import Control.Monad (when)
 import Control.Monad.Identity
 import Control.Monad.Trans (MonadIO, liftIO)
 import Control.Failure
@@ -38,7 +39,7 @@ type AlartListener = (String, String, String) -> IO ()
 watchAlart :: (MonadIO m) => String -> String -> AlartListener -> IO () -> m (Maybe (ChatClient, AlartStatus))
 watchAlart userid password listener closer = liftIO $ do
   -- Login
-  (NH.Response cd _ bdy1) <- NH.parseUrl loginurl1 >>= 
+  (NH.Response cd _ bdy1) <- NH.parseUrl loginurl1 >>=
                              NH.httpLbsRedirect . NH.urlEncodedBody [(C8.pack "mail", C8.pack userid),
                                                                      (C8.pack "password", C8.pack password)]
   when (cd < 200 || cd >= 300) $ liftIO $ failure $ NH.StatusCodeException cd bdy1
@@ -62,8 +63,8 @@ watchAlart userid password listener closer = liftIO $ do
   where
     loginurl1 = "https://secure.nicovideo.jp/secure/login?site=nicolive_antenna"
     userResponseParser :: (Monad m) => TagParserT String u m String
-    userResponseParser = element "nicovideo_user_response" 
-                         (\ot -> if TS.fromAttrib "status" ot == "ok" 
+    userResponseParser = element "nicovideo_user_response"
+                         (\ot -> if TS.fromAttrib "status" ot == "ok"
                                  then element "ticket" txt'
                                  else fail "Login failed")
     alartStatusParser :: (Monad m) => TagParserT String u m AlartStatus

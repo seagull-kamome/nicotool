@@ -1,7 +1,7 @@
 {-# LANGUAGE ViewPatterns, PackageImports, RecordWildCards, NamedFieldPuns #-}
-module Network.Service.NicoVideo 
-       (ThumbInfo (..), Tag (..), getThumbInfo , 
-        PlayerStatus (..), LiveScreen (..), LiveContents (..), 
+module Network.Service.NicoVideo
+       (ThumbInfo (..), Tag (..), getThumbInfo ,
+        PlayerStatus (..), LiveScreen (..), LiveContents (..),
         Que (..), UserTwitterInfo (..), LiveUser (..), LiveTelop (..), LiveStream (..), RTMP(..),
         LiveTwitter (..),
         getPlayerStatus,
@@ -26,7 +26,7 @@ import Network.Service.NicoVideo.Chat
 --
 --
 data Tag = Tag { tagCategory :: Bool, tagLock :: Bool, tagName :: String } deriving (Show)
-data ThumbInfo = 
+data ThumbInfo =
   ThumbInfo {
     thumbVideoID :: String,
     thumbTitle :: String,
@@ -72,7 +72,7 @@ thumbParser = element "thumb" $ \_ -> do {
   (read -> thumbSizeLow) <- element "size_low" txt';
   (read -> thumbViewCounter) <-  element "view_counter" txt';
   (read -> thumbCommentNum) <- element "comment_num" txt';
-  (read ->thumbMyListNum) <- element "mylist_counter" txt';
+  (read -> thumbMyListNum) <- element "mylist_counter" txt';
   thumbLastResBody <- element "last_res_body" txt';
   thumbWatchURL <- element "watch_url" txt';
   thumbThumbType <- element "thumb_type" txt';
@@ -146,6 +146,7 @@ data LiveStream = LiveStream {
   liveCommentCount :: Int,
   liveDanjoCommentMode :: Bool,
   liveHQStream :: Bool,
+  liveNicoden :: Bool,
   liveRelayComment :: Bool,
   livePark :: Bool,
   liveBourbonURL :: String,
@@ -177,11 +178,12 @@ data LiveStream = LiveStream {
   liveCommentLock :: Maybe Bool,
   liveBackgroundComment :: Maybe Bool,
   liveContents :: [LiveContents],
-  livePress :: (Int, Int, String)
+  livePress :: (Int, Int, String),
+  liveIsPriorityPrefecture :: String
   } deriving (Show)
 data RTMP = RTMP { rtmpIsFMS :: Bool, rtmpURL :: String, rtmpTicket :: String } deriving Show
 data LiveTwitter = LiveTwitter { twitterLiveEnabled :: Bool, twitterVIPModeCount :: Int, twitterLiveAPIURL :: String } deriving Show
-data PlayerStatus = 
+data PlayerStatus =
   PlayerStatus {
     playerStatusTime :: ClockTime,
     playerStatusLiveStream :: LiveStream,
@@ -190,7 +192,7 @@ data PlayerStatus =
     playerStatusMessageServer :: MessageServer,
     playerStatusTIDList :: [String],
     playerStatusTwitter :: LiveTwitter
-    } 
+    }
   | PlayerUnknownError
   | PlayerComingsoon
   deriving Show
@@ -200,7 +202,7 @@ getPlayerStatus liveid loader = sendRqXML url (Just loader) playerStatusParser (
   where url = "http://live.nicovideo.jp/api/getplayerstatus/" ++ (encString False ok_url liveid)
 
 playerStatusParser :: (Monad m) => TagParserT String u m PlayerStatus
-playerStatusParser = 
+playerStatusParser =
   element "getplayerstatus" $ \ot -> do {
     playerStatusLiveStream <- element "stream" $ \_ -> do {
        liveID <- element "id" txt';
@@ -209,7 +211,8 @@ playerStatusParser =
        liveDescription <- element "description" txt';
        liveCommentCount <- readElement "comment_count";
        liveDanjoCommentMode <- boolElement "danjo_comment_mode";
-       liveHQStream <- boolElement "hqstream";                        
+       liveHQStream <- boolElement "hqstream";
+       liveNicoden <- boolElement "nicoden";
        liveRelayComment <- boolElement "relay_comment";
        livePark <- boolElement "park";
        liveBourbonURL <- element "bourbon_url" txt';
@@ -236,9 +239,9 @@ playerStatusParser =
        liveStartTime <- unixTimeElement "start_time";
        -- ここから終了している枠のみ
        liveTimeShiftTime <- option Nothing $ unixTimeElement "timeshift_time" >>= return . Just;
-       liveQue <- option [] $ element "quesheet" (\_ -> many $ element "que" (\ot -> do { 
-                                                                                 x <- txt; 
-                                                                                 return $ Que (read $ TS.fromAttrib "vpos" ot) 
+       liveQue <- option [] $ element "quesheet" (\_ -> many $ element "que" (\ot -> do {
+                                                                                 x <- txt;
+                                                                                 return $ Que (read $ TS.fromAttrib "vpos" ot)
                                                                                  (TS.fromAttrib "mail" ot) (TS.fromAttrib "name" ot) x
                                                                                  }) );
        -- ここまで。そして、ここから放送中の枠のみ
@@ -246,21 +249,22 @@ playerStatusParser =
        liveIchibaNoticeEnable <- option Nothing $ boolElement "ichiba_notice_enable" >>= return . Just;
        liveCommentLock <- option Nothing $ boolElement "comment_lock" >>= return . Just;
        liveBackgroundComment <- option Nothing $ boolElement "background_comment" >>= return . Just;
-       liveContents <- option [] $ element "contents_list" $ 
+       liveContents <- option [] $ element "contents_list" $
                        \_ -> let convID "main" = MainScreen
                                  convID "sub" = SubScreen
                                  convID _ = undefined
                              in  do {
                                many $ element "contents" (\ot -> do { x <- txt;
-                                                                      return $ LiveContents x 
+                                                                      return $ LiveContents x
                                                                       (convID $ TS.fromAttrib "id" ot)
                                                                       (TOD (read $ TS.fromAttrib "start_time" ot) 0)
                                                                       (TS.fromAttrib "disableVideo" ot == "1")
                                                                       (TS.fromAttrib "disableAudio" ot == "1"); })
                                };
        -- ここまで。
-       livePress <- element "press" 
+       livePress <- element "press" 	
                     (\_ -> do { x <- readElement "display_lines"; y <- readElement "display_time"; z <- element "style_conf" txt'; return (x,y,z) });
+       liveIsPriorityPrefecture <- element "is_priority_prefecture" txt';
        return $ LiveStream {..}
        };
     playerStatusUser <- element "user" $ \_ -> do {
@@ -288,7 +292,7 @@ playerStatusParser =
         };
       return $ LiveUser {..}
       };
-    playerStatusRTMP <- element "rtmp" $ 
+    playerStatusRTMP <- element "rtmp" $
                         \ot -> do { x <- element "url" txt'; y <- element "ticket" txt'; return $ RTMP (TS.fromAttrib "is_fms" ot == "1") x y };
     playerStatusMessageServer <- messageServerParser;
     playerStatusTIDList <- element "tid_list" $ return . const [];
@@ -308,7 +312,7 @@ playerStatusParser =
 --
 --
 --
-data StreamInfo = 
+data StreamInfo =
   StreamInfo {
     streamLiveID :: String,
     streamTitle :: String,
@@ -318,11 +322,11 @@ data StreamInfo =
     } deriving Show
 getStreamInfo :: String -> IO (Either RequestError (StreamInfo, String, String, [(String,String)]) )
 getStreamInfo liveid = sendRqXML url Nothing streamInfoParser ()
-  where 
+  where
     url = "http://live.nicovideo.jp/api/getstreaminfo/" ++ liveid
     streamInfoParser :: (Monad m) => TagParserT String u m (StreamInfo, String, String, [(String, String)])
     streamInfoParser =
-      element "getstreaminfo" 
+      element "getstreaminfo"
                     (\ot -> do {
                         streamLiveID <- element "request_id" txt';
                         streaminfo <- element "streaminfo" (\_ -> do {
