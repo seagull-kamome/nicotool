@@ -1,0 +1,54 @@
+name: nicotool
+version: 0.0.1
+cabal-version: -any
+build-type: Simple
+license: AllRightsReserved
+license-file: ""
+copyright:
+maintainer:
+build-depends: HDBC -any, HDBC-sqlite3 -any, base -any,
+               bytestring -any, directory -any, failure -any, glib -any, gtk -any,
+               http-enumerator -any, monads-tf -any, network -any,
+               network-bytestring -any, old-time -any, parsec -any, split -any,
+               tagsoup -any, url -any, utf8-string -any
+stability:
+homepage:
+package-url:
+bug-reports:
+synopsis:
+description: .
+category:
+author:
+tested-with:
+data-files:
+data-dir: ""
+extra-source-files:
+extra-tmp-files:
+ 
+executable: nicotool
+main-is: main.hs
+buildable: True
+build-tools:
+cpp-options:
+cc-options:
+ld-options:
+pkgconfig-depends:
+frameworks:
+c-sources:
+extensions:
+extra-libraries:
+extra-lib-dirs:
+includes:
+install-includes:
+include-dirs:
+hs-source-dirs: .
+other-modules: Utils.Browser Utils.Browser.GoogleChrome
+               Network.XMLSocket Network.Service.NicoVideo
+               Network.Service.NicoVideo.XML Network.Service.NicoVideo.Chat
+               Network.Service.NicoVideo.Alart Network.Service.NicoVideo.HTTP
+ghc-prof-options:
+ghc-shared-options:
+ghc-options: -threaded
+hugs-options:
+nhc98-options:
+jhc-options:
