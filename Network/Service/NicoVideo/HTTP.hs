@@ -9,6 +9,7 @@
 module Network.Service.NicoVideo.HTTP
        (sendRq, sendRqXML) where
 
+import Control.Monad (when)
 import Control.Monad.Trans
 import Control.Monad.Identity
 import Control.Failure
