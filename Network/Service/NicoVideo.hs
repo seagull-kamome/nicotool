@@ -131,6 +131,7 @@ data LiveUser = LiveUser {
   liveuserNick :: String,
   liveuserIsPremium :: Bool,
   liveuserID :: String,
+  liveuserHKey :: String,
   liveuserIsJoin :: Bool,
   liveuserIMMUComment :: Int,
   liveuserCanBroadcast :: Bool,
@@ -147,6 +148,8 @@ data LiveStream = LiveStream {
   liveDanjoCommentMode :: Bool,
   liveHQStream :: Bool,
   liveNicoden :: Bool,
+  liveAllowNetduetto :: Bool,
+  liveNDToken :: String,
   liveRelayComment :: Bool,
   livePark :: Bool,
   liveBourbonURL :: String,
@@ -166,6 +169,7 @@ data LiveStream = LiveStream {
   liveTwitterTag :: String,
   liveIsOwner :: Bool,
   liveOwnerID :: String,
+  liveOwnerName :: String,
   liveIsReserved :: Bool,
   liveBaseTime :: ClockTime,
   liveOpenTime :: ClockTime,
@@ -213,7 +217,9 @@ playerStatusParser =
        liveDanjoCommentMode <- boolElement "danjo_comment_mode";
        liveHQStream <- boolElement "hqstream";
        liveNicoden <- boolElement "nicoden";
+       liveAllowNetduetto <- boolElement "allow_netduetto";
        liveRelayComment <- boolElement "relay_comment";
+       liveNDToken <- element "nd_token" txt';
        livePark <- boolElement "park";
        liveBourbonURL <- element "bourbon_url" txt';
        liveFullVideo <- element "full_video" txt';
@@ -232,6 +238,7 @@ playerStatusParser =
        liveTwitterTag <- element "twitter_tag" txt';
        liveIsOwner <- boolElement "is_owner";
        liveOwnerID <- element "owner_id" txt';
+       liveOwnerName <- element "owner_name" txt';
        liveIsReserved <- boolElement "is_reserved";
        liveBaseTime <- unixTimeElement "base_time";
        liveOpenTime <- unixTimeElement "open_time";
@@ -276,6 +283,7 @@ playerStatusParser =
       liveuserNick <- element "nickname" txt';
       liveuserIsPremium <- boolElement "is_premium";
       liveuserID <- element "user_id" txt';
+      liveuserHKey <- element "hkey" txt';
       liveuserIsJoin <- boolElement "is_join";
       liveuserIMMUComment <- readElement "immu_comment";
       liveuserCanBroadcast <- boolElement "can_broadcast";

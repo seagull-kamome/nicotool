@@ -42,10 +42,11 @@ includes:
 install-includes:
 include-dirs:
 hs-source-dirs: .
-other-modules: Utils.Browser Utils.Browser.GoogleChrome
-               Network.XMLSocket Network.Service.NicoVideo
-               Network.Service.NicoVideo.XML Network.Service.NicoVideo.Chat
-               Network.Service.NicoVideo.Alart Network.Service.NicoVideo.HTTP
+other-modules: Main Utils.Browser Preference
+               Utils.Browser.GoogleChrome Network.XMLSocket
+               Network.Service.NicoVideo Network.Service.NicoVideo.XML
+               Network.Service.NicoVideo.Chat Network.Service.NicoVideo.Alart
+               Network.Service.NicoVideo.HTTP
 ghc-prof-options:
 ghc-shared-options:
 ghc-options: -threaded
